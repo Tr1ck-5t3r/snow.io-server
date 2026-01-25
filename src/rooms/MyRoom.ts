@@ -11,9 +11,18 @@ export class MyRoom extends Room<MyRoomState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
-      player.x += input.dx;
-      player.z += input.dz;
-      player.rotationY = input.rotY;
+      // Validate inputs to ensure they are numbers
+      const dx = isNaN(input.dx) ? 0 : input.dx;
+      const dz = isNaN(input.dz) ? 0 : input.dz;
+      const rotY = isNaN(input.rotY) ? 0 : input.rotY;
+
+      player.x += dx;
+      player.z += dz;
+      player.rotationY = rotY;
+
+      // Ensure x and z are not NaN
+      player.x = isNaN(player.x) ? 0 : player.x;
+      player.z = isNaN(player.z) ? 0 : player.z;
 
       // optional: clamp player to world bounds
       player.x = Math.max(-10, Math.min(10, player.x));
