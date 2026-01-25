@@ -1,6 +1,8 @@
 import { Room, Client } from "@colyseus/core";
 import { MyRoomState } from "./schema/MyRoomState";
 import { PlayerState } from "./schema/PlayerState";
+import { applyMovement } from "../simulation/movement";
+
 export class MyRoom extends Room<MyRoomState> {
   maxClients = 4;
 
@@ -11,24 +13,26 @@ export class MyRoom extends Room<MyRoomState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
+      // Log received input
+      console.log("Received input from client:", input);
+
       // Validate inputs to ensure they are numbers
-      const dx = isNaN(input.dx) ? 0 : input.dx;
-      const dz = isNaN(input.dz) ? 0 : input.dz;
-      const rotY = isNaN(input.rotY) ? 0 : input.rotY;
+      const validInput = {
+        forward: input.forward || 0,
+        backward: input.backward || 0,
+        left: input.left || 0,
+        right: input.right || 0,
+        rotY: isNaN(input.rotY) ? 0 : input.rotY,
+      };
 
-      player.x += dx;
-      player.z += dz;
-      player.rotationY = rotY;
+      player.rotationY = validInput.rotY;
 
-      // Ensure x and z are not NaN
-      player.x = isNaN(player.x) ? 0 : player.x;
-      player.z = isNaN(player.z) ? 0 : player.z;
+      // Apply movement logic
+      applyMovement(player, validInput, 1 / 60);
 
-      // optional: clamp player to world bounds
-      player.x = Math.max(-10, Math.min(10, player.x));
-      player.z = Math.max(-10, Math.min(10, player.z));
+      // Log updated player state
+      console.log("Updated player state:", player);
     });
-
 
     this.setSimulationInterval(this.update.bind(this), 1000 / 60);
   }

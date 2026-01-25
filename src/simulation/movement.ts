@@ -29,4 +29,8 @@ export function applyMovement(
 
   player.x += (dx * cos - dz * sin) * speed;
   player.z += (dx * sin + dz * cos) * speed;
+
+  // Ensure x and z are not NaN
+  player.x = isNaN(player.x) ? 0 : player.x;
+  player.z = isNaN(player.z) ? 0 : player.z;
 }
