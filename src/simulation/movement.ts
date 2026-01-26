@@ -19,6 +19,9 @@ export function applyMovement(
   if (length > 0) {
     dx /= length;
     dz /= length;
+  } else {
+    dx = 0;
+    dz = 0;
   }
 
   const speed = MOVE_SPEED * delta;
