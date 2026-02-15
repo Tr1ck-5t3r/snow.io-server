@@ -3,18 +3,14 @@ import { PlayerState } from "./../rooms/schema/PlayerState";
 
 export function applyMovement(
   player: PlayerState,
-  input: any,
+  input: { forward?: number; right?: number; rotY?: number },
   delta: number
 ) {
-  let dx = 0;
-  let dz = 0;
+  // derive movement axes from input (forward should move toward negative z, matching previous logic)
+  let dx = input.right || 0;
+  let dz = -(input.forward || 0);
 
-  if (input.forward) dz -= 1;
-  if (input.backward) dz += 1;
-  if (input.left) dx -= 1;
-  if (input.right) dx += 1;
-
-  // normalize
+  // normalize the vector so diagonal movement isn't faster
   const length = Math.hypot(dx, dz);
   if (length > 0) {
     dx /= length;
@@ -26,9 +22,10 @@ export function applyMovement(
 
   const speed = MOVE_SPEED * delta;
 
-  // rotate movement by yaw
-  const sin = Math.sin(player.rotY);
-  const cos = Math.cos(player.rotY);
+  // rotate movement by yaw; prefer the yaw that came with input (e.g. fresh camera angles)
+  const yaw = input.rotY !== undefined ? input.rotY : player.rotationY;
+  const sin = Math.sin(yaw);
+  const cos = Math.cos(yaw);
 
   player.x += (dx * cos - dz * sin) * speed;
   player.z += (dx * sin + dz * cos) * speed;

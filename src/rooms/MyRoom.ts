@@ -13,27 +13,23 @@ export class MyRoom extends Room<MyRoomState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
-      // Log received input
-      console.log("Received input from client:", input);
+      // interpret and sanitize directional input coming from the client
+      player.inputForward = isNaN(input.forward) ? 0 : input.forward;
+      player.inputRight = isNaN(input.right) ? 0 : input.right;
+      player.rotationY = isNaN(input.rotY) ? player.rotationY : input.rotY;
 
-      // Validate inputs to ensure they are numbers
-      const validInput = {
-        forward: input.forward || 0,
-        backward: input.backward || 0,
-        left: input.left || 0,
-        right: input.right || 0,
-        rotY: isNaN(input.rotY) ? 0 : input.rotY,
-      };
-
-      player.rotationY = validInput.rotY;
-
-      // Apply movement logic
-      applyMovement(player, validInput, 1 / 60);
-
-      // Log updated player state
-      console.log("Updated player state:", player);
+      console.log("Received input from", client.sessionId, {
+        forward: player.inputForward,
+        right: player.inputRight,
+        rotY: player.rotationY,
+      });
+      console.log("Player state after input:", {
+        x: player.x,
+        z: player.z,
+      });
     });
 
+    // schedule a simulation tick to apply movement and broadcast patches
     this.setSimulationInterval(this.update.bind(this), 1000 / 60);
   }
 
@@ -52,11 +48,20 @@ export class MyRoom extends Room<MyRoomState> {
 
   update(deltaTime: number) {
     const dt = deltaTime / 1000;
-    const SPEED = 5;
-
     for (const player of this.state.players.values()) {
-      player.x += player.inputX * SPEED * dt;
-      player.z += player.inputZ * SPEED * dt;
+      const prevX = player.x;
+      const prevZ = player.z;
+
+      // apply movement based on stored input values
+      applyMovement(
+        player,
+        { forward: player.inputForward, right: player.inputRight, rotY: player.rotationY },
+        dt
+      );
+
+      if (player.x !== prevX || player.z !== prevZ) {
+        console.log("Player moved", player.sessionId, player.x.toFixed(2), player.z.toFixed(2));
+      }
     }
   }
 }

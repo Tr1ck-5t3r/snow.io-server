@@ -15,4 +15,11 @@ export class PlayerState extends Schema {
 
   @type("number")
   rotationY = 0;
+
+  // input axes recorded each message, consumed by simulation tick
+  @type("number")
+  inputForward = 0;
+
+  @type("number")
+  inputRight = 0;
 }
