@@ -22,4 +22,10 @@ export class PlayerState extends Schema {
 
   @type("number")
   inputRight = 0;
+
+  @type("number")
+  velocityX = 0;
+
+  @type("number")
+  velocityZ = 0;
 }
