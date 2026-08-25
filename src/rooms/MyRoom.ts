@@ -24,15 +24,15 @@ export class MyRoom extends Room<MyRoomState> {
       player.inputRight = isNaN(input.right) ? 0 : input.right;
       player.rotationY = isNaN(input.rotY) ? player.rotationY : input.rotY;
 
-      console.log("Received input from", client.sessionId, {
-        forward: player.inputForward,
-        right: player.inputRight,
-        rotY: player.rotationY,
-      });
-      console.log("Player state after input:", {
-        x: player.x,
-        z: player.z,
-      });
+      // console.log("Received input from", client.sessionId, {
+      //   forward: player.inputForward,
+      //   right: player.inputRight,
+      //   rotY: player.rotationY,
+      // });
+      // console.log("Player state after input:", {
+      //   x: player.x,
+      //   z: player.z,
+      // });
     });
 
     this.onMessage("shoot", (client, data) => {
@@ -143,7 +143,7 @@ export class MyRoom extends Room<MyRoomState> {
       );
 
       if (player.x !== prevX || player.z !== prevZ) {
-        console.log("Player moved", player.sessionId, player.x.toFixed(2), player.z.toFixed(2));
+        //console.log("Player moved", player.sessionId, player.x.toFixed(2), player.z.toFixed(2));
       }
     }
 
