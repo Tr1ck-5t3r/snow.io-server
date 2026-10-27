@@ -14,6 +14,12 @@ export class PlayerState extends Schema {
   z = 0;
 
   @type("number")
+  velocityY = 0;
+
+  @type("boolean")
+  isGrounded = true;
+
+  @type("number")
   rotationY = 0;
 
   // input axes recorded each message, consumed by simulation tick
@@ -28,4 +34,7 @@ export class PlayerState extends Schema {
 
   @type("number")
   velocityZ = 0;
+
+  @type("number")
+  lastShotAt = 0;
 }

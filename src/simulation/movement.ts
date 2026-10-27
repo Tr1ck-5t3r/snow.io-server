@@ -1,4 +1,4 @@
-import { MOVE_ACCELERATION, MOVE_FRICTION, MOVE_SPEED } from "../config/constants";
+import { GRAVITY, MOVE_ACCELERATION, MOVE_FRICTION, MOVE_SPEED, PLAYER_JUMP_HEIGHT, PLAYER_RADIUS, WORLD_DEPTH, WORLD_WIDTH } from "../config/constants";
 import { PlayerState } from "./../rooms/schema/PlayerState";
 
 export function applyMovement(
@@ -72,6 +72,39 @@ export function applyMovement(
   player.x += nextVX * delta;
   player.z += nextVZ * delta;
 
-  player.x = isNaN(player.x) ? 0 : player.x;
-  player.z = isNaN(player.z) ? 0 : player.z;
+  const maxX = WORLD_WIDTH / 2 - PLAYER_RADIUS;
+  const maxZ = WORLD_DEPTH / 2 - PLAYER_RADIUS;
+  player.x = Number.isFinite(player.x) ? Math.max(-maxX, Math.min(maxX, player.x)) : 0;
+  player.z = Number.isFinite(player.z) ? Math.max(-maxZ, Math.min(maxZ, player.z)) : 0;
+
+  // Clear velocity directed out of the arena so the player does not press against an edge.
+  if ((player.x === maxX && nextVX > 0) || (player.x === -maxX && nextVX < 0)) player.velocityX = 0;
+  if ((player.z === maxZ && nextVZ > 0) || (player.z === -maxZ && nextVZ < 0)) player.velocityZ = 0;
+
+  applyVerticalMovement(player, delta);
+}
+
+export function startJump(player: PlayerState) {
+  if (!player.isGrounded) return false;
+
+  player.velocityY = Math.sqrt(2 * GRAVITY * PLAYER_JUMP_HEIGHT);
+  player.isGrounded = false;
+  return true;
+}
+
+function applyVerticalMovement(player: PlayerState, delta: number) {
+  if (player.isGrounded) {
+    player.y = 0;
+    player.velocityY = 0;
+    return;
+  }
+
+  player.velocityY -= GRAVITY * delta;
+  player.y += player.velocityY * delta;
+
+  if (player.y <= 0) {
+    player.y = 0;
+    player.velocityY = 0;
+    player.isGrounded = true;
+  }
 }

@@ -2,11 +2,13 @@ import { Room, Client } from "@colyseus/core";
 import { MyRoomState } from "./schema/MyRoomState";
 import { PlayerState } from "./schema/PlayerState";
 import { ProjectileState } from "./schema/ProjectileState";
-import { applyMovement } from "../simulation/movement";
+import { applyMovement, startJump } from "../simulation/movement";
+import { GRAVITY } from "../config/constants";
 
 const COLLISION_RADIUS = 1.5;
 const PROJECTILE_LIFETIME = 10000; // 10 seconds in ms
-const GRAVITY = 9.81;
+const SHOT_COOLDOWN_MS = 250;
+const MAX_PROJECTILE_SPEED = 80;
 
 export class MyRoom extends Room<MyRoomState> {
   maxClients = 4;
@@ -20,9 +22,9 @@ export class MyRoom extends Room<MyRoomState> {
       if (!player) return;
 
       // interpret and sanitize directional input coming from the client
-      player.inputForward = isNaN(input.forward) ? 0 : input.forward;
-      player.inputRight = isNaN(input.right) ? 0 : input.right;
-      player.rotationY = isNaN(input.rotY) ? player.rotationY : input.rotY;
+      player.inputForward = Number.isFinite(input?.forward) ? Math.max(-1, Math.min(1, input.forward)) : 0;
+      player.inputRight = Number.isFinite(input?.right) ? Math.max(-1, Math.min(1, input.right)) : 0;
+      player.rotationY = Number.isFinite(input?.rotY) ? input.rotY : player.rotationY;
 
       // console.log("Received input from", client.sessionId, {
       //   forward: player.inputForward,
@@ -35,26 +37,47 @@ export class MyRoom extends Room<MyRoomState> {
       // });
     });
 
+    this.onMessage("jump", (client) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) startJump(player);
+    });
+
     this.onMessage("shoot", (client, data) => {
       const shooter = this.state.players.get(client.sessionId);
       if (!shooter) return;
 
+      const now = Date.now();
+      if (now - shooter.lastShotAt < SHOT_COOLDOWN_MS) {
+        return;
+      }
+
+      const rawPosition = Array.isArray(data?.position) ? data.position : [0, 0, 0];
+      const rawVelocity = Array.isArray(data?.velocity) ? data.velocity : [0, 0, 0];
+      const position = rawPosition.map((value: number | string) => Number(value) || 0);
+      const velocity = rawVelocity.map((value: number | string) => Number(value) || 0);
+
+      if (position.length < 3 || velocity.length < 3) {
+        return;
+      }
+
+      const launchSpeed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+      if (!Number.isFinite(launchSpeed) || launchSpeed <= 0 || launchSpeed > MAX_PROJECTILE_SPEED) {
+        return;
+      }
+
       const projectile = new ProjectileState();
       projectile.id = `projectile_${this.projectileCounter++}`;
       projectile.playerId = client.sessionId;
-      projectile.x = data.position[0];
-      projectile.y = data.position[1];
-      projectile.z = data.position[2];
-      projectile.vx = data.velocity[0];
-      projectile.vy = data.velocity[1];
-      projectile.vz = data.velocity[2];
-      projectile.timestamp = data.timestamp;
+      projectile.x = position[0];
+      projectile.y = position[1];
+      projectile.z = position[2];
+      projectile.vx = velocity[0];
+      projectile.vy = velocity[1];
+      projectile.vz = velocity[2];
+      projectile.timestamp = now;
 
+      shooter.lastShotAt = now;
       this.state.projectiles.set(projectile.id, projectile);
-      console.log("Created projectile", projectile.id, "from", client.sessionId, {
-        position: [projectile.x, projectile.y, projectile.z],
-        velocity: [projectile.vx, projectile.vy, projectile.vz],
-      });
     });
 
     // schedule a simulation tick to apply movement and broadcast patches
@@ -103,7 +126,7 @@ export class MyRoom extends Room<MyRoomState> {
         if (playerId === projectile.playerId) continue; // Don't hit the shooter
 
         const dx = projectile.x - player.x;
-        const dy = projectile.y;
+        const dy = projectile.y - player.y;
         const dz = projectile.z - player.z;
         const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
