@@ -6,6 +6,7 @@ export const TICK_RATE = 30;
 // Playable arena dimensions and player footprint. Keep these in sync with the client.
 export const WORLD_WIDTH = 100;
 export const WORLD_DEPTH = 100;
+export const WALL_HEIGHT = 24;
 export const PLAYER_RADIUS = 0.5;
 export const PLAYER_JUMP_HEIGHT = 2;
 export const GRAVITY = 9.81;

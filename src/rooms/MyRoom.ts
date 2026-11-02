@@ -2,17 +2,20 @@ import { Room, Client } from "@colyseus/core";
 import { MyRoomState } from "./schema/MyRoomState";
 import { PlayerState } from "./schema/PlayerState";
 import { ProjectileState } from "./schema/ProjectileState";
+import { DecalState } from "./schema/DecalState";
 import { applyMovement, startJump } from "../simulation/movement";
-import { GRAVITY } from "../config/constants";
+import { GRAVITY, WALL_HEIGHT } from "../config/constants";
 
 const COLLISION_RADIUS = 1.5;
 const PROJECTILE_LIFETIME = 10000; // 10 seconds in ms
+const PROJECTILE_SPAWN_GRACE_MS = 150;
 const SHOT_COOLDOWN_MS = 250;
 const MAX_PROJECTILE_SPEED = 80;
 
 export class MyRoom extends Room<MyRoomState> {
   maxClients = 4;
   private projectileCounter = 0;
+  private decalCounter = 0;
 
   onCreate() {
     this.setState(new MyRoomState());
@@ -105,6 +108,15 @@ export class MyRoom extends Room<MyRoomState> {
     const projectilesToRemove: string[] = [];
 
     for (const [projectileId, projectile] of this.state.projectiles.entries()) {
+      const age = Date.now() - projectile.timestamp;
+      if (age > PROJECTILE_LIFETIME) {
+        projectilesToRemove.push(projectileId);
+        continue;
+      }
+
+      // Keep a new projectile in replicated state long enough for clients to render it.
+      if (age < PROJECTILE_SPAWN_GRACE_MS) continue;
+
       // Apply gravity
       projectile.vy -= gravity;
 
@@ -113,16 +125,26 @@ export class MyRoom extends Room<MyRoomState> {
       projectile.y += projectile.vy * dt;
       projectile.z += projectile.vz * dt;
 
-      // Check if projectile is too old
-      const age = Date.now() - projectile.timestamp;
-      if (age > PROJECTILE_LIFETIME) {
-        projectilesToRemove.push(projectileId);
-        continue;
+      let impact: { x: number; y: number; z: number; nx: number; ny: number; nz: number } | null = null;
+
+      // Arena floor
+      if (projectile.y <= 0 && Math.abs(projectile.x) <= 50 && Math.abs(projectile.z) <= 50) {
+        impact = { x: projectile.x, y: 0, z: projectile.z, nx: 0, ny: 1, nz: 0 };
+      }
+
+      // Arena walls (the visible walls sit on the +/-50 arena boundary)
+      if (!impact && projectile.y <= WALL_HEIGHT && Math.abs(projectile.x) >= 50) {
+        const side = Math.sign(projectile.x);
+        impact = { x: side * 50, y: projectile.y, z: projectile.z, nx: -side, ny: 0, nz: 0 };
+      }
+      if (!impact && projectile.y <= WALL_HEIGHT && Math.abs(projectile.z) >= 50) {
+        const side = Math.sign(projectile.z);
+        impact = { x: projectile.x, y: projectile.y, z: side * 50, nx: 0, ny: 0, nz: -side };
       }
 
       // Check collision with players
-      let hitPlayer = false;
       for (const [playerId, player] of this.state.players.entries()) {
+        if (impact) break;
         if (playerId === projectile.playerId) continue; // Don't hit the shooter
 
         const dx = projectile.x - player.x;
@@ -132,10 +154,32 @@ export class MyRoom extends Room<MyRoomState> {
 
         if (distance < COLLISION_RADIUS) {
           console.log("Projectile", projectileId, "hit player", playerId);
-          projectilesToRemove.push(projectileId);
-          hitPlayer = true;
+          const length = distance || 1;
+          const nx = dx / length;
+          const ny = dy / length;
+          const nz = dz / length;
+          impact = {
+            x: player.x + nx * COLLISION_RADIUS,
+            y: player.y + ny * COLLISION_RADIUS,
+            z: player.z + nz * COLLISION_RADIUS,
+            nx, ny, nz,
+          };
           break;
         }
+      }
+
+      if (impact) {
+        const decal = new DecalState();
+        decal.id = `decal_${this.decalCounter++}`;
+        decal.x = impact.x; decal.y = impact.y; decal.z = impact.z;
+        decal.nx = impact.nx; decal.ny = impact.ny; decal.nz = impact.nz;
+        this.state.decals.set(decal.id, decal);
+        if (this.state.decals.size > 200) {
+          const oldestDecalId = this.state.decals.keys().next().value;
+          if (oldestDecalId) this.state.decals.delete(oldestDecalId);
+        }
+        projectilesToRemove.push(projectileId);
+        continue;
       }
 
       // Remove if below ground
