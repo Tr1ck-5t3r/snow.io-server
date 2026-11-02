@@ -37,4 +37,16 @@ export class PlayerState extends Schema {
 
   @type("number")
   lastShotAt = 0;
+
+  @type("number")
+  health = 50;
+
+  @type("number")
+  maxHealth = 50;
+
+  @type("number")
+  respawnAt = 0;
+
+  @type("number")
+  spawnIndex = 0;
 }

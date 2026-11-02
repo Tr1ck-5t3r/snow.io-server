@@ -4,13 +4,33 @@ import { PlayerState } from "./schema/PlayerState";
 import { ProjectileState } from "./schema/ProjectileState";
 import { DecalState } from "./schema/DecalState";
 import { applyMovement, startJump } from "../simulation/movement";
-import { GRAVITY, WALL_HEIGHT } from "../config/constants";
+import { GRAVITY, PLAYER_RADIUS, WALL_HEIGHT, WORLD_DEPTH, WORLD_WIDTH } from "../config/constants";
 
-const COLLISION_RADIUS = 1.5;
+const SNOWMAN_SCALE = 1.2;
+const PLAYER_CAPSULE_RADIUS = 0.5 * SNOWMAN_SCALE;
+const PROJECTILE_RADIUS = 0.22;
+const HIT_RADIUS = PLAYER_CAPSULE_RADIUS + PROJECTILE_RADIUS;
+const PLAYER_HEALTH = 50;
+const SNOWBALL_DAMAGE = 25;
+const RESPAWN_DELAY_MS = 5000;
+const SPAWN_CORNERS: [number, number][] = [
+  [-44, -44],
+  [44, -44],
+  [-44, 44],
+  [44, 44],
+];
+const SPAWN_OFFSETS: [number, number][] = [
+  [0, 0], [1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4],
+  [1.4, 1.4], [-1.4, 1.4], [1.4, -1.4], [-1.4, -1.4],
+];
 const PROJECTILE_LIFETIME = 10000; // 10 seconds in ms
+const DECAL_LIFETIME_MS = 5000;
+const DECAL_FADE_DURATION_MS = 1500;
 const PROJECTILE_SPAWN_GRACE_MS = 150;
-const SHOT_COOLDOWN_MS = 250;
-const MAX_PROJECTILE_SPEED = 80;
+// Keep server headroom below the client's fire interval so network jitter
+// doesn't cause visually predicted shots to be rejected.
+const SHOT_COOLDOWN_MS = 75;
+const MAX_PROJECTILE_SPEED = 25;
 
 export class MyRoom extends Room<MyRoomState> {
   maxClients = 4;
@@ -22,7 +42,7 @@ export class MyRoom extends Room<MyRoomState> {
 
     this.onMessage("input", (client, input) => {
       const player = this.state.players.get(client.sessionId);
-      if (!player) return;
+      if (!player || player.health <= 0) return;
 
       // interpret and sanitize directional input coming from the client
       player.inputForward = Number.isFinite(input?.forward) ? Math.max(-1, Math.min(1, input.forward)) : 0;
@@ -42,12 +62,12 @@ export class MyRoom extends Room<MyRoomState> {
 
     this.onMessage("jump", (client) => {
       const player = this.state.players.get(client.sessionId);
-      if (player) startJump(player);
+      if (player && player.health > 0) startJump(player);
     });
 
     this.onMessage("shoot", (client, data) => {
       const shooter = this.state.players.get(client.sessionId);
-      if (!shooter) return;
+      if (!shooter || shooter.health <= 0) return;
 
       const now = Date.now();
       if (now - shooter.lastShotAt < SHOT_COOLDOWN_MS) {
@@ -90,6 +110,10 @@ export class MyRoom extends Room<MyRoomState> {
   onJoin(client: Client) {
     const player = new PlayerState();
     player.sessionId = client.sessionId;
+    player.health = PLAYER_HEALTH;
+    player.maxHealth = PLAYER_HEALTH;
+    player.spawnIndex = this.findFreeSpawnIndex();
+    this.placeAtSpawn(player);
 
     this.state.players.set(client.sessionId, player);
     console.log(client.sessionId, "joined");
@@ -116,6 +140,8 @@ export class MyRoom extends Room<MyRoomState> {
 
       // Keep a new projectile in replicated state long enough for clients to render it.
       if (age < PROJECTILE_SPAWN_GRACE_MS) continue;
+
+      const previousPosition = { x: projectile.x, y: projectile.y, z: projectile.z };
 
       // Apply gravity
       projectile.vy -= gravity;
@@ -145,26 +171,20 @@ export class MyRoom extends Room<MyRoomState> {
       // Check collision with players
       for (const [playerId, player] of this.state.players.entries()) {
         if (impact) break;
-        if (playerId === projectile.playerId) continue; // Don't hit the shooter
+        if (playerId === projectile.playerId || player.health <= 0) continue;
 
-        const dx = projectile.x - player.x;
-        const dy = projectile.y - player.y;
-        const dz = projectile.z - player.z;
-        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const playerHit = this.sweptSnowmanHit(previousPosition, projectile, player);
+        if (!playerHit) continue;
 
-        if (distance < COLLISION_RADIUS) {
-          console.log("Projectile", projectileId, "hit player", playerId);
-          const length = distance || 1;
-          const nx = dx / length;
-          const ny = dy / length;
-          const nz = dz / length;
-          impact = {
-            x: player.x + nx * COLLISION_RADIUS,
-            y: player.y + ny * COLLISION_RADIUS,
-            z: player.z + nz * COLLISION_RADIUS,
-            nx, ny, nz,
-          };
-          break;
+        impact = playerHit;
+        player.health = Math.max(0, player.health - SNOWBALL_DAMAGE);
+        if (player.health === 0) {
+          player.respawnAt = Date.now() + RESPAWN_DELAY_MS;
+          player.inputForward = 0;
+          player.inputRight = 0;
+          player.velocityX = 0;
+          player.velocityZ = 0;
+          player.velocityY = 0;
         }
       }
 
@@ -173,6 +193,10 @@ export class MyRoom extends Room<MyRoomState> {
         decal.id = `decal_${this.decalCounter++}`;
         decal.x = impact.x; decal.y = impact.y; decal.z = impact.z;
         decal.nx = impact.nx; decal.ny = impact.ny; decal.nz = impact.nz;
+        const decalCreatedAt = Date.now();
+        decal.createdAt = decalCreatedAt;
+        decal.fadeAt = decalCreatedAt + DECAL_LIFETIME_MS - DECAL_FADE_DURATION_MS;
+        decal.expiresAt = decalCreatedAt + DECAL_LIFETIME_MS;
         this.state.decals.set(decal.id, decal);
         if (this.state.decals.size > 200) {
           const oldestDecalId = this.state.decals.keys().next().value;
@@ -196,25 +220,219 @@ export class MyRoom extends Room<MyRoomState> {
 
   update(deltaTime: number) {
     const dt = deltaTime / 1000;
+    const now = Date.now();
     
-    // Simulate player movement
+    // Respawn due players, then move active players in small substeps. The
+    // substeps prevent fast/lagged ticks from tunneling through another player.
+    const activePlayers: PlayerState[] = [];
     for (const player of this.state.players.values()) {
-      const prevX = player.x;
-      const prevZ = player.z;
-
-      // apply movement based on stored input values
-      applyMovement(
-        player,
-        { forward: player.inputForward, right: player.inputRight, rotY: player.rotationY },
-        dt
-      );
-
-      if (player.x !== prevX || player.z !== prevZ) {
-        //console.log("Player moved", player.sessionId, player.x.toFixed(2), player.z.toFixed(2));
+      if (player.health <= 0) {
+        if (now >= player.respawnAt) this.respawnPlayer(player);
+        else continue;
       }
+      activePlayers.push(player);
+    }
+
+    const substepCount = Math.max(1, Math.min(120, Math.ceil(dt / (1 / 60))));
+    const substepDelta = dt / substepCount;
+    for (let step = 0; step < substepCount; step += 1) {
+      for (const player of activePlayers) {
+        applyMovement(
+          player,
+          { forward: player.inputForward, right: player.inputRight, rotY: player.rotationY },
+          substepDelta,
+        );
+      }
+      this.resolveSnowmanCollisions();
     }
 
     // Simulate projectiles
     this.simulateProjectiles(deltaTime);
+    this.expireDecals(now);
+  }
+
+  private expireDecals(now: number) {
+    for (const [decalId, decal] of this.state.decals.entries()) {
+      if (decal.expiresAt > 0 && now >= decal.expiresAt) {
+        this.state.decals.delete(decalId);
+      }
+    }
+  }
+
+  private placeAtSpawn(player: PlayerState) {
+    const [baseX, baseZ] = SPAWN_CORNERS[player.spawnIndex % SPAWN_CORNERS.length];
+    let spawnX = baseX;
+    let spawnZ = baseZ;
+    const minDistance = PLAYER_RADIUS * 2 + 0.1;
+    let greatestNearestDistance = -1;
+
+    for (const [offsetX, offsetZ] of SPAWN_OFFSETS) {
+      const candidateX = baseX + offsetX;
+      const candidateZ = baseZ + offsetZ;
+      const nearestDistance = Math.min(
+        Number.POSITIVE_INFINITY,
+        ...[...this.state.players.values()]
+          .filter((other) => other !== player && other.health > 0)
+          .map((other) => Math.hypot(candidateX - other.x, candidateZ - other.z)),
+      );
+      if (nearestDistance > greatestNearestDistance) {
+        greatestNearestDistance = nearestDistance;
+        spawnX = candidateX;
+        spawnZ = candidateZ;
+      }
+      if (nearestDistance >= minDistance) {
+        break;
+      }
+    }
+
+    player.x = spawnX;
+    player.y = 0;
+    player.z = spawnZ;
+    player.velocityX = 0;
+    player.velocityY = 0;
+    player.velocityZ = 0;
+    player.inputForward = 0;
+    player.inputRight = 0;
+    player.isGrounded = true;
+  }
+
+  private findFreeSpawnIndex() {
+    const occupied = new Set([...this.state.players.values()].map((player) => player.spawnIndex));
+    const freeIndex = SPAWN_CORNERS.findIndex((_, index) => !occupied.has(index));
+    return freeIndex >= 0 ? freeIndex : 0;
+  }
+
+  private resolveSnowmanCollisions() {
+    const players = [...this.state.players.values()].filter((player) => player.health > 0);
+    const minDistance = PLAYER_RADIUS * 2 + 0.1;
+    const maxX = WORLD_WIDTH / 2 - PLAYER_RADIUS;
+    const maxZ = WORLD_DEPTH / 2 - PLAYER_RADIUS;
+
+    // A few passes handle crowded groups without allowing players to overlap.
+    for (let pass = 0; pass < 3; pass += 1) {
+      for (let i = 0; i < players.length; i += 1) {
+        for (let j = i + 1; j < players.length; j += 1) {
+          const first = players[i];
+          const second = players[j];
+          let dx = second.x - first.x;
+          let dz = second.z - first.z;
+          let distance = Math.hypot(dx, dz);
+          if (distance >= minDistance) continue;
+
+          if (distance < 1e-6) {
+            dx = first.sessionId < second.sessionId ? 1 : -1;
+            dz = 0;
+          }
+
+          const normalLength = Math.hypot(dx, dz) || 1;
+          const nx = dx / normalLength;
+          const nz = dz / normalLength;
+          const correction = (minDistance - distance) / 2;
+          first.x = Math.max(-maxX, Math.min(maxX, first.x - nx * correction));
+          first.z = Math.max(-maxZ, Math.min(maxZ, first.z - nz * correction));
+          second.x = Math.max(-maxX, Math.min(maxX, second.x + nx * correction));
+          second.z = Math.max(-maxZ, Math.min(maxZ, second.z + nz * correction));
+
+          // Remove closing velocity along the contact normal. Tangential
+          // movement remains intact, while pushing directly into a Snowman
+          // can't build up enough motion to pass through it.
+          const closingVelocity = (second.velocityX - first.velocityX) * nx
+            + (second.velocityZ - first.velocityZ) * nz;
+          if (closingVelocity < 0) {
+            const impulse = closingVelocity * 0.5;
+            first.velocityX += nx * impulse;
+            first.velocityZ += nz * impulse;
+            second.velocityX -= nx * impulse;
+            second.velocityZ -= nz * impulse;
+          }
+        }
+      }
+    }
+  }
+
+  private respawnPlayer(player: PlayerState) {
+    // Move the player to a different corner than the one used before death.
+    player.spawnIndex = (player.spawnIndex + 1) % SPAWN_CORNERS.length;
+    this.placeAtSpawn(player);
+    player.health = player.maxHealth;
+    player.respawnAt = 0;
+  }
+
+  private sweptSnowmanHit(
+    from: { x: number; y: number; z: number },
+    projectile: ProjectileState,
+    player: PlayerState,
+  ) {
+    const dx = projectile.x - from.x;
+    const dy = projectile.y - from.y;
+    const dz = projectile.z - from.z;
+    const horizontalLengthSq = dx * dx + dz * dz;
+    const segmentLengthSq = horizontalLengthSq + dy * dy;
+    const bottom = player.y + 0.5 * SNOWMAN_SCALE;
+    const top = player.y + 1.6 * SNOWMAN_SCALE;
+    const candidates = [0, 1];
+
+    if (horizontalLengthSq > 0) {
+      candidates.push(Math.max(0, Math.min(1,
+        ((player.x - from.x) * dx + (player.z - from.z) * dz) / horizontalLengthSq,
+      )));
+    }
+    if (Math.abs(dy) > 1e-8) {
+      candidates.push(Math.max(0, Math.min(1, (bottom - from.y) / dy)));
+      candidates.push(Math.max(0, Math.min(1, (top - from.y) / dy)));
+    }
+    if (segmentLengthSq > 0) {
+      for (const endpointY of [bottom, top]) {
+        const projection = ((player.x - from.x) * dx
+          + (endpointY - from.y) * dy
+          + (player.z - from.z) * dz) / segmentLengthSq;
+        candidates.push(Math.max(0, Math.min(1, projection)));
+      }
+    }
+
+    let closest = { x: from.x, y: from.y, z: from.z };
+    let closestAxis = { x: player.x, y: bottom, z: player.z };
+    let closestDistanceSq = Number.POSITIVE_INFINITY;
+
+    for (const t of candidates) {
+      const point = { x: from.x + dx * t, y: from.y + dy * t, z: from.z + dz * t };
+      const axis = { x: player.x, y: Math.max(bottom, Math.min(top, point.y)), z: player.z };
+      const ox = point.x - axis.x;
+      const oy = point.y - axis.y;
+      const oz = point.z - axis.z;
+      const distanceSq = ox * ox + oy * oy + oz * oz;
+      if (distanceSq < closestDistanceSq) {
+        closestDistanceSq = distanceSq;
+        closest = point;
+        closestAxis = axis;
+      }
+    }
+
+    if (closestDistanceSq > HIT_RADIUS * HIT_RADIUS) return null;
+
+    let nx = closest.x - closestAxis.x;
+    let ny = closest.y - closestAxis.y;
+    let nz = closest.z - closestAxis.z;
+    let normalLength = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (normalLength < 1e-8) {
+      // A dead-center hit has no radial direction; use the incoming shot
+      // direction so its impact decal still has a valid surface normal.
+      nx = -dx;
+      ny = -dy;
+      nz = -dz;
+      normalLength = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    }
+    nx /= normalLength;
+    ny /= normalLength;
+    nz /= normalLength;
+
+    return {
+      x: closestAxis.x + nx * PLAYER_CAPSULE_RADIUS,
+      y: closestAxis.y + ny * PLAYER_CAPSULE_RADIUS,
+      z: closestAxis.z + nz * PLAYER_CAPSULE_RADIUS,
+      nx,
+      ny,
+      nz,
+    };
   }
 }

@@ -27,4 +27,5 @@ export class ProjectileState extends Schema {
 
   @type("number")
   timestamp = 0;
+
 }
