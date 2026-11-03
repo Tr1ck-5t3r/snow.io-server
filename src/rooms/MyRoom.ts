@@ -107,9 +107,12 @@ export class MyRoom extends Room<MyRoomState> {
     this.setSimulationInterval(this.update.bind(this), 1000 / 60);
   }
 
-  onJoin(client: Client) {
+  onJoin(client: Client, options: { name?: string } = {}) {
     const player = new PlayerState();
     player.sessionId = client.sessionId;
+    player.name = typeof options.name === "string"
+      ? options.name.trim().slice(0, 20) || "Snowman"
+      : "Snowman";
     player.health = PLAYER_HEALTH;
     player.maxHealth = PLAYER_HEALTH;
     player.spawnIndex = this.findFreeSpawnIndex();

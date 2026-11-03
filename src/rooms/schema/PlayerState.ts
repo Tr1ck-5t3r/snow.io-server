@@ -2,6 +2,9 @@ import { Schema, type } from "@colyseus/schema";
 
 export class PlayerState extends Schema {
   @type("string")
+  name = "Snowman";
+
+  @type("string")
   sessionId = "";
 
   @type("number")
